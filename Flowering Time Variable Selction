@@ -1,0 +1,231 @@
+# Install packages if not already installed
+#install.packages(c("glmnet", "caret", "dplyr", "ggplot2", "Matrix", "readr"))
+
+# Load the libraries
+library(glmnet)
+library(caret)
+library(dplyr)
+library(ggplot2)
+library(Matrix)
+library(readr)
+library(dplR)
+
+# importing sas version file of Maize data
+data <- read_csv("/Users/godfred/Documents/Project 2 Variable Selection/maize.csv")
+# Load the dataset
+#data <- read_csv("maize_dataset_cleaned.csv")
+
+
+# Impute missing values using median for numerical variables
+preProcess_missingdata_model <- preProcess(df, method='medianImpute')
+df <- predict(preProcess_missingdata_model, newdata = df)
+
+# Verify missing values are handled
+head(df)
+
+df1<-maize[complete.cases(maize),]
+dim(df1)
+
+x<-df1[, 3:7391]
+x <- as.matrix(x)
+head(x)
+dim(x)
+View(x)
+y <- as.matrix(df1$DtoA)
+
+dim(y)
+head(y)
+
+# Set seed for reproducibility
+set.seed(123)
+
+# Create a train-test split (80% training, 20% testing)
+train_indices <- createDataPartition(y, p = 0.8, list = FALSE)
+
+x_train <- x[train_indices, ]
+y_train <- y[train_indices]
+
+x_test <- x[-train_indices, ]
+y_test <- y[-train_indices]
+
+# Verify the split
+dim(x_train)
+dim(x_test)
+length(y_train)
+length(y_test)
+dim(y_train)
+
+x_train <- as.matrix(x_train)
+x_test <- as.matrix(x_test)
+y_train <- as.matrix(y_train)
+y_test <- as.matrix(y_test)
+set.seed(123)
+lasso_cv <- cv.glmnet(
+  x_train, 
+  y_train, 
+  alpha = 1,                # alpha = 1 for Lasso
+  nfolds = 5,               # 5-fold cross-validation
+  type.measure = "mse",     # Mean Squared Error as the metric
+  standardize = TRUE       # Already standardized
+)
+
+cross_validated_mse <- lasso_cv$cvm
+
+# Access the standard deviation of MSE for each lambda
+cross_validated_mse_sd <- lasso_cv$cvsd
+
+# Combine them into a data frame for better visualization
+cv_results <- data.frame(
+  Lambda = lasso_cv$lambda,
+  CV_MSE = cross_validated_mse,
+  CV_MSE_SD = cross_validated_mse_sd,
+  Number_of_variables_selected = lasso_cv$nzero
+)
+
+plot(lasso_cv)
+title("Lasso Regression Cross-Validation", line = 2.5)
+
+# Optimal lambda that minimizes MSE
+optimal_lambda <- lasso_cv$lambda.min
+cat("Optimal lambda selected:", optimal_lambda, "\n")
+lambda = 0.2
+final_lasso <- glmnet(
+  x_train, 
+  y_train, 
+  alpha = 1, 
+  lambda = lambda, 
+  standardize = TRUE     # Already standardized
+)
+
+# View the coefficients
+print(coef(final_lasso))
+
+# Extract coefficients as a matrix
+lasso_coefficients <- as.matrix(coef(final_lasso))
+
+# Convert to a data frame for better visualization
+coefficients_df <- data.frame(
+  Feature = rownames(lasso_coefficients),
+  Coefficient = lasso_coefficients[,1]
+)
+
+# Remove the intercept
+coefficients_df <- coefficients_df %>% filter(Feature != "(Intercept)")
+
+# Sort the coefficients by absolute value
+coefficients_df$abs_coef <- abs(coefficients_df$Coefficient)
+coefficients_df <- coefficients_df %>% arrange(desc(abs_coef))
+
+# Display the top 10 features
+print(head(coefficients_df, 10))
+
+
+# Identify non-zero coefficients (selected features)
+selected_features <- coefficients_df %>% filter(Coefficient != 0)
+
+# Number of selected features
+cat("Number of selected features:", nrow(selected_features), "\n")
+
+selected_features <- as.data.frame(selected_features)
+
+selected_features <- as.matrix(selected_features)
+# Display selected features
+print(selected_features)
+
+# Predict on training data
+y_train_pred <- predict(final_lasso, s = optimal_lambda, newx = x_train)
+
+# Predict on testing data
+y_test_pred <- predict(final_lasso, s = optimal_lambda, newx = x_test)
+
+# Calculate R-squared for training data
+r2_train <- cor(y_train, y_train_pred)^2
+cat("Training R-squared:", r2_train, "\n")
+
+# Calculate R-squared for testing data
+r2_test <- cor(y_test, y_test_pred)^2
+cat("Testing R-squared:", r2_test, "\n")
+
+# Calculate Root Mean Squared Error for training data
+rmse_train <- sqrt(mean((y_train - y_train_pred)^2))
+cat("Training RMSE:", mse_train, "\n")
+
+# Calculate Root Mean Squared Error for testing data
+rmse_test <- sqrt(mean((y_test - y_test_pred)^2))
+cat("Testing RMSE:", mse_test, "\n")
+
+
+# Select all features by absolute coefficient value
+top_features <- coefficients_df %>% top_n(109, abs_coef)
+
+# Plot the top features
+ggplot(top_features, aes(x = reorder(Feature, abs_coef), y = Coefficient)) +
+  geom_bar(stat = "identity", fill = "tomato") +
+  coord_flip() +
+  labs(title = "Coefficients of Features Selected by Lasso",
+       x = "Feature",
+       y = "Coefficient Value") +
+  theme_minimal() +
+  theme(axis.text.y = element_blank())  # Remove y-axis text (feature names)
+
+
+# Scatter plot for training data
+ggplot(data = data.frame(Actual = y_train, Predicted = y_train_pred),
+       aes(x = Actual, y = Predicted)) +
+  geom_point(alpha = 0.3, color = "darkgreen") +
+  geom_abline(intercept = 0, slope = 1, color = "red", linetype = "dashed") +
+  labs(title = "Training Data: Actual vs. Predicted dtoa",
+       x = "Actual dtoa",
+       y = "Predicted dtoa") +
+  theme_minimal()
+
+
+###Distribution Plot of Phenotype (dtoa) - Histogram
+
+ggplot(df1, aes(x = DtoA)) +
+  geom_histogram(aes(y = ..density..), 
+                 binwidth = 0.5, 
+                 fill = "blue", 
+                 color = "white", 
+                 alpha = 0.7) +
+  geom_density(color = "red", size = 1) +  # Overlay a density curve
+  labs(
+    title = "Distribution of Days to Anthesis (DtoA)",
+    x = "Days to Anthesis (DtoA)",
+    y = "Density"
+  ) +
+  theme_minimal() +  # Start with a minimal theme
+  theme(
+    # Remove major and minor gridlines
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    
+    # Add a black outline around the plot
+    panel.border = element_rect(color = "black", fill = NA, size = 1),
+    
+    # Optional: Adjust plot title and axis text for better readability
+    plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+    axis.title = element_text(size = 14),
+    axis.text = element_text(size = 12)
+  )
+
+
+### Boxplot for population/classes
+
+ggplot(df1, aes(x = as.factor(pop), y = DtoA)) +
+  geom_boxplot(fill = "lightblue", color = "darkblue") +
+  labs(
+    title = "Boxplot of Days to Anthesis by Population",
+    x = "Population (pop)",
+    y = "Days to Anthesis (DtoA)"
+  ) +
+  theme_minimal() +  # Start with a minimal theme
+  theme(
+    # Remove major and minor gridlines
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    
+    # Add a black outline around the plot
+    panel.border = element_rect(color = "black", fill = NA, size = 1)
+  )
+
